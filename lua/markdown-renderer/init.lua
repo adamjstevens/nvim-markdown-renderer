@@ -73,6 +73,58 @@ local function inline(buf, row, line)
   scan("_[^%s_][^_]-_", 1, 1, "MdrItalic", true)
 end
 
+local function is_delim(line)
+  return line:find("|") and line:find("-") and line:match("^[%s|:%-]+$")
+end
+
+-- ponytail: escaped \| splits cells; handle it if real docs need it.
+local function cells(line)
+  local s = line:gsub("^%s*|", ""):gsub("|%s*$", "")
+  local out = {}
+  for c in (s .. "|"):gmatch("(.-)|") do table.insert(out, vim.trim(c)) end
+  return out
+end
+
+-- ponytail: cells render as plain text (markers stripped, no inline highlights).
+local function plain(s)
+  return (s:gsub("%[([^%]]+)%]%([^)]+%)", "%1"):gsub("%*%*", ""):gsub("~~", ""):gsub("`", ""))
+end
+
+-- lines[1] header, lines[2] delimiter, rest body. Returns top border, one string per line, bottom border.
+local function layout_table(lines)
+  local rows, aligns, widths = {}, {}, {}
+  for i, c in ipairs(cells(lines[2])) do
+    aligns[i] = c:match("^:.*:$") and "c" or c:match(":$") and "r" or "l"
+  end
+  for k, line in ipairs(lines) do
+    if k ~= 2 then
+      local r = vim.tbl_map(plain, cells(line))
+      for i, c in ipairs(r) do widths[i] = math.max(widths[i] or 3, api.nvim_strwidth(c)) end
+      rows[k] = r
+    end
+  end
+  local function border(l, m, r)
+    local segs = vim.tbl_map(function(w) return ("─"):rep(w + 2) end, widths)
+    return l .. table.concat(segs, m) .. r
+  end
+  local out = {}
+  for k in ipairs(lines) do
+    if k == 2 then
+      out[k] = border("├", "┼", "┤")
+    else
+      local segs = {}
+      for i, w in ipairs(widths) do
+        local c = rows[k][i] or ""
+        local gap = w - api.nvim_strwidth(c)
+        local left = aligns[i] == "r" and gap or aligns[i] == "c" and math.floor(gap / 2) or 0
+        segs[i] = (" "):rep(left) .. c .. (" "):rep(gap - left)
+      end
+      out[k] = "│ " .. table.concat(segs, " │ ") .. " │"
+    end
+  end
+  return border("┌", "┬", "┐"), out, border("└", "┴", "┘")
+end
+
 local function render_line(buf, win, row, line)
   local hashes, text_col = line:match("^(#+)%s+()")
   if hashes and #hashes <= 6 then
@@ -107,11 +159,27 @@ function M.render(buf, win)
   local top, bot = vim.fn.line("w0", win), vim.fn.line("w$", win)
   local cur = api.nvim_win_get_cursor(win)[1]
   -- Scan from the top so we know whether visible lines sit inside a fence.
-  local fence
-  for i, line in ipairs(api.nvim_buf_get_lines(buf, 0, bot, false)) do
+  -- Whole buffer, since a table's column widths depend on rows below the window.
+  local lines = api.nvim_buf_get_lines(buf, 0, -1, false)
+  local fence, tbl = nil, {}
+  for i = 1, bot do
+    local line = lines[i]
     local row, visible = i - 1, i >= top and i ~= cur
     local f = line:match("^%s*(```+)") or line:match("^%s*(~~~+)")
-    if fence then
+    if not fence and not tbl[i] and line:find("|") and lines[i + 1] and is_delim(lines[i + 1]) then
+      local j = i + 1
+      while lines[j + 1] and lines[j + 1]:find("|") do j = j + 1 end
+      local first, out, last = layout_table(vim.list_slice(lines, i, j))
+      for k, s in ipairs(out) do tbl[i + k - 1] = s end
+      mark(buf, row, 0, { virt_lines = { { { first, "MdrDim" } } }, virt_lines_above = true })
+      mark(buf, j - 1, 0, { virt_lines = { { { last, "MdrDim" } } } })
+    end
+    if tbl[i] then
+      if visible then
+        conceal(buf, row, 0, #line)
+        mark(buf, row, 0, { virt_text = { { tbl[i] } }, virt_text_pos = "inline" })
+      end
+    elseif fence then
       local closing = f and f:sub(1, 1) == fence:sub(1, 1) and #f >= #fence and line:match("^%s*[`~]+%s*$")
       if closing then
         fence = nil

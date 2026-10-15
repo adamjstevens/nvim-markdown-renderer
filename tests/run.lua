@@ -4,6 +4,7 @@ local mdr = require("markdown-renderer")
 local buf = vim.api.nvim_get_current_buf()
 vim.api.nvim_buf_set_lines(buf, 0, -1, false, {
   "# Title", "some **bold** and `code`", "```lua", "local x = **not bold**", "```", "- item", "> quote",
+  "| Name | Qty |", "|------|----:|", "| **apple** | 3 |",
 })
 vim.api.nvim_win_set_cursor(0, { 1, 0 })
 mdr.attach(buf)
@@ -17,6 +18,15 @@ assert(#marks(2) == 1 and marks(2)[1][4].conceal == "", "opening fence concealed
 assert(#marks(3) == 0, "no inline rendering inside code block")
 assert(marks(5)[1][4].virt_text[1][1] == "•", "bullet")
 assert(marks(6)[1][4].virt_text[1][1] == "▎", "quote bar")
+
+local function row_text(row)
+  for _, m in ipairs(marks(row)) do
+    if m[4].virt_text_pos == "inline" then return m[4].virt_text[1][1] end
+  end
+end
+assert(row_text(7) == "│ Name  │ Qty │", "header: " .. tostring(row_text(7)))
+assert(row_text(8) == "├───────┼─────┤", "delimiter: " .. tostring(row_text(8)))
+assert(row_text(9) == "│ apple │   3 │", "body, right-aligned: " .. tostring(row_text(9)))
 
 vim.api.nvim_win_set_cursor(0, { 2, 0 })
 mdr.render(buf, vim.api.nvim_get_current_win())
